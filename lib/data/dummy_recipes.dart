@@ -1,7 +1,5 @@
 import 'package:resepku/models/recipe.dart';
 
-// Data sementara. Isinya sama dengan https://dummyjson.com/recipes (id 1-6),
-// sehingga di Modul 8 cukup sumber datanya yang diganti ke API.
 const List<Recipe> dummyRecipes = [
   Recipe(
     id: 1,
