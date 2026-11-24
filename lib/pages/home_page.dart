@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:resepku/data/dummy_recipes.dart';
+import 'package:provider/provider.dart';
+import 'package:resepku/models/recipe.dart';
+import 'package:resepku/pages/add_recipe_page.dart';
 import 'package:resepku/pages/setting_page.dart';
+import 'package:resepku/services/recipe_service.dart';
+import 'package:resepku/widgets/error_view.dart';
 import 'package:resepku/widgets/favorite_badge_button.dart';
 import 'package:resepku/widgets/recipe_grid_card.dart';
 import 'package:resepku/widgets/recipe_tile.dart';
-import 'package:resepku/models/recipe.dart';
+import 'package:resepku/pages/search_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -15,27 +19,62 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   bool _isGrid = false;
+  late Future<List<Recipe>> _recipesFuture;
 
   // null berarti "Semua" cuisine
   String? _cuisine;
 
-  // Daftar cuisine diambil dari data (bukan ditulis manual).
-  // toSet() membuang duplikat, toList() mengubahnya kembali menjadi list.
-  final List<String> _cuisines = dummyRecipes
-      .map((r) => r.cuisine)
-      .toSet()
-      .toList();
+  @override
+  void initState() {
+    super.initState();
+    // Future dibuat SEKALI di initState, bukan di build()
+    _recipesFuture = context.read<RecipeService>().fetchRecipes();
+  }
+
+  // Membuat Future baru, lalu setState agar FutureBuilder memakainya
+  void _reload() {
+    setState(() {
+      _recipesFuture = context.read<RecipeService>().fetchRecipes();
+    });
+  }
+
+  // Dipanggil RefreshIndicator saat daftar ditarik ke bawah
+  Future<void> _refresh() async {
+    _reload();
+    try {
+      await _recipesFuture;
+    } catch (_) {
+      // error sudah ditampilkan oleh FutureBuilder
+    }
+  }
+
+  // Membuka halaman tambah resep
+  Future<void> _openAddPage() async {
+    final created = await Navigator.push<Recipe>(
+      context,
+      MaterialPageRoute(builder: (context) => const AddRecipePage()),
+    );
+
+    if (created == null || !mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '"${created.name}" diterima server dengan id ${created.id}. '
+          'dummyjson hanya menyimulasikan penyimpanan.',
+        ),
+      ),
+    );
+  }
 
   // Data yang sudah difilter sesuai chip yang dipilih
-  List<Recipe> get _filteredRecipes {
-    if (_cuisine == null) return dummyRecipes;
-    return dummyRecipes.where((r) => r.cuisine == _cuisine).toList();
+  List<Recipe> _filterRecipes(List<Recipe> allRecipes) {
+    if (_cuisine == null) return allRecipes;
+    return allRecipes.where((r) => r.cuisine == _cuisine).toList();
   }
 
   @override
   Widget build(BuildContext context) {
-    final recipes = _filteredRecipes;
-
     return Scaffold(
       appBar: AppBar(
         title: Row(
@@ -47,6 +86,14 @@ class _HomePageState extends State<HomePage> {
         ),
         actions: [
           IconButton(
+            tooltip: 'Cari resep',
+            icon: const Icon(Icons.search),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const SearchPage()),
+            ),
+          ),
+          IconButton(
             tooltip: _isGrid ? 'Tampilan list' : 'Tampilan grid',
             icon: Icon(_isGrid ? Icons.view_list : Icons.grid_view),
             onPressed: () => setState(() => _isGrid = !_isGrid),
@@ -54,7 +101,7 @@ class _HomePageState extends State<HomePage> {
           const FavoriteBadgeButton(),
           IconButton(
             tooltip: 'Pengaturan',
-            icon: const Icon(Icons.settings),
+            icon: const Icon(Icons.settings_outlined),
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (context) => const SettingsPage()),
@@ -62,33 +109,80 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // Aturan 1: ListView horizontal di dalam Column wajib diberi tinggi.
-          SizedBox(
-            height: 56,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              itemCount: _cuisines.length + 1, // +1 untuk chip "Semua"
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (context, index) {
-                // index 0 = "Semua" (null), selebihnya = cuisine dari data
-                final String? value = index == 0 ? null : _cuisines[index - 1];
-                return ChoiceChip(
-                  label: Text(value ?? 'Semua'),
-                  selected: _cuisine == value,
-                  onSelected: (_) => setState(() => _cuisine = value),
-                );
-              },
-            ),
-          ),
-          // Aturan 2: list/grid yang mengisi sisa layar di dalam Column
-          // dibungkus Expanded.
-          Expanded(
-            child: _isGrid ? _buildGrid(recipes) : _buildList(recipes),
-          ),
-        ],
+
+      body: FutureBuilder<List<Recipe>>(
+        future: _recipesFuture,
+        builder: (context, snapshot) {
+          // 1. Loading state
+          if (snapshot.connectionState == ConnectionState.waiting &&
+              !snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          // 2. Error state
+          if (snapshot.hasError) {
+            return ErrorView(
+              message: 'Gagal memuat resep.\n${snapshot.error}',
+              onRetry: _reload,
+            );
+          }
+
+          // 3. Data state
+          final allRecipes = snapshot.data ?? [];
+
+          if (allRecipes.isEmpty) {
+            return const Center(child: Text('Belum ada resep.'));
+          }
+
+          // Daftar cuisine diambil dari data API/service
+          final cuisines = allRecipes.map((r) => r.cuisine).toSet().toList();
+
+          final recipes = _filterRecipes(allRecipes);
+
+          return Column(
+            children: [
+              SizedBox(
+                height: 56,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  itemCount: cuisines.length + 1,
+                  separatorBuilder: (_, _) => const SizedBox(width: 8),
+                  itemBuilder: (context, index) {
+                    final String? value = index == 0
+                        ? null
+                        : cuisines[index - 1];
+
+                    return ChoiceChip(
+                      label: Text(value ?? 'Semua'),
+                      selected: _cuisine == value,
+                      onSelected: (_) {
+                        setState(() => _cuisine = value);
+                      },
+                    );
+                  },
+                ),
+              ),
+
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: _refresh,
+                  child: _isGrid ? _buildGrid(recipes) : _buildList(recipes),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+
+      // Tombol tambah resep
+      floatingActionButton: FloatingActionButton(
+        tooltip: 'Tambah resep',
+        onPressed: _openAddPage,
+        child: const Icon(Icons.add),
       ),
     );
   }
